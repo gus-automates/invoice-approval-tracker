@@ -6,6 +6,14 @@ Built with Google Apps Script, Gmail API, Drive API, and Google Sheets as the da
 
 ---
 
+## Preview
+
+![Approval Tracker UI](docs/preview.png)
+
+> Left pane: invoice list with per-reviewer dropdowns and comments. Right pane: inline PDF viewer loads when a row is clicked.
+
+---
+
 ## The Problem
 
 Project managers were receiving invoices and timesheets by email, forwarding them manually, waiting for replies, and tracking approvals in a shared spreadsheet by hand. The process was slow, error-prone, and hard to audit.
