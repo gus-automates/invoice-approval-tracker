@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 24px;
+      text-align: left;
+      margin-bottom: 16px;
+      margin-left: 32px;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      padding: 16px;
+      padding-bottom: 0px;
+    }
+
+    /* Tab row — single line with horizontal scroll if needed */
+    .tabs {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 8px;
+      margin-right: 8px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      white-space: nowrap;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .tab {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 12px;
+      cursor: pointer;
+      border: 1px solid #ccc;
+      border-bottom: none;
+      background-color: #f9f9f9;
+      font-size: 14px;
+      border-radius: 5px 5px 0 0;
+      white-space: nowrap;
+      line-height: 1.2;
+    }
+
+    .tab.active {
+      font-weight: bold;
+      background-color: white;
+      border-color: #aaa;
+      border-bottom: 2px solid white;
+    }
+
+    /* Main content area: table on the left, PDF viewer on the right */
+    .content {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+      border-top: 1px solid #ccc;
+      min-height: 0;
+    }
+
+    .left {
+      flex: 1 1 50%;
+      min-width: 300px;
+      overflow: auto;
+      padding: 0 16px 16px 16px;
+    }
+
+    .right {
+      flex: 1 1 50%;
+      min-width: 300px;
+      padding: 16px;
+      border-left: 1px solid #ddd;
+      box-shadow: -3px 0 5px -2px rgba(0,0,0,0.1);
+      overflow: hidden;
+    }
+
+    /* Draggable divider between the two panes */
+    #resizer {
+      width: 6px;
+      background-color: #ddd;
+      cursor: col-resize;
+      position: relative;
+      z-index: 10;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      cursor: pointer;
+      table-layout: fixed;
+    }
+
+    th, td {
+      border: 1px solid #ddd;
+      padding: 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background-color: #f2f2f2;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    tr:hover {
+      background-color: #f5f5f5;
+    }
+
+    /* Highlight the currently selected row */
+    .active-row {
+      background-color: #e3f2fd !important;
+    }
+
+    textarea, select {
+      font-family: inherit;
+      font-size: 13px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    /* Wrap long file names */
+    th:first-child,
+    td:first-child {
+      max-width: 220px;
+      white-space: normal;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    /* Comments textarea: fills cell, resizable vertically */
+    td:last-child textarea {
+      width: 100%;
+      box-sizing: border-box;
+      resize: vertical;
+    }
+
+    iframe {
+      border: none;
+      width: 100%;
+      height: 100%;
+    }
+
+    #pdfViewerContainer {
+      height: 100%;
+    }
+
+    button {
+      padding: 6px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    /* Error banner — hidden by default, shown on server call failures */
+    #errorBanner {
+      display: none;
+      background: #fdecea;
+      color: #b71c1c;
+      padding: 8px 16px;
+      font-size: 13px;
+      border-bottom: 1px solid #f5c6c6;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="tabs">
+      <div class="tab active" id="invoicesTab" onclick="switchTab('Invoices')">🗂️ Invoices</div>
+      <div class="tab" id="timesheetsTab" onclick="switchTab('Timesheets')">📆 Timesheets</div>
+    </div>
+    <h2 style="flex: 1;">Approval Tracker</h2>
+    <button onclick="manualRefresh()">🔄 Refresh</button>
+  </div>
+
+  <!-- Shown when a server call fails -->
+  <div id="errorBanner"></div>
+
+  <div class="content" id="resizableContainer">
+    <div class="left" id="tablePane">
+      <table id="invoiceTable">
+        <thead><tr id="tableHeaders"></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <!-- Drag this divider to resize the two panes; double-click to reset 50/50 -->
+    <div id="resizer" title="Drag to resize • Double-click to reset"></div>
+
+    <div class="right" id="pdfViewerContainer">
+      <!-- PDF preview loads here when a row is clicked -->
+      <iframe id="pdfViewer" src=""></iframe>
+    </div>
+  </div>
+
+  <script>
+    // ─── State ───────────────────────────────────────────────────────────────
+    let activeRowIndex = null;  // which row is currently selected
+    let pdfUrlCache    = null;  // PDF URL of the selected row (survives refresh)
+    let currentSheet   = "Invoices";
+    let autoRefreshTimer = null;
+
+    // ─── Tab switching ────────────────────────────────────────────────────────
+
+    function switchTab(sheetName) {
+      currentSheet = sheetName;
+
+      // Update tab highlight
+      document.getElementById('invoicesTab').classList.toggle('active', sheetName === 'Invoices');
+      document.getElementById('timesheetsTab').classList.toggle('active', sheetName === 'Timesheets');
+
+      // Reset selection state — we're loading a completely different sheet
+      activeRowIndex = null;
+      pdfUrlCache    = null;
+      document.getElementById('pdfViewer').src = '';
+
+      loadTable();
+    }
+
+    // ─── Error banner ─────────────────────────────────────────────────────────
+
+    function showError(msg) {
+      const banner = document.getElementById('errorBanner');
+      banner.textContent = '⚠️ ' + msg;
+      banner.style.display = 'block';
+    }
+
+    function clearError() {
+      const banner = document.getElementById('errorBanner');
+      banner.style.display  = 'none';
+      banner.textContent = '';
+    }
+
+    // ─── Auto-refresh (pause-aware) ───────────────────────────────────────────
+
+    // Tracks whether any input is currently focused so we don't wipe it mid-edit
+    let userIsEditing = false;
+
+    document.addEventListener('focusin', (e) => {
+      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
+        userIsEditing = true;
+      }
+    });
+
+    document.addEventListener('focusout', (e) => {
+      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
+        userIsEditing = false;
+      }
+    });
+
+    function startAutoRefresh() {
+      if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+      // Auto-refresh every 60 seconds, but skip if the user is actively editing
+      autoRefreshTimer = setInterval(() => {
+        if (!userIsEditing) loadTable();
+      }, 60000);
+    }
+
+    // Manual refresh button — always fires immediately regardless of edit state
+    function manualRefresh() {
+      loadTable();
+    }
+
+    // ─── Data loading ─────────────────────────────────────────────────────────
+
+    function loadTable() {
+      clearError();
+      google.script.run
+        .withSuccessHandler(buildTable)
+        .withFailureHandler(err => showError("Could not load data: " + err.message))
+        .getSheetData(currentSheet);
+    }
+
+    // ─── Table rendering ──────────────────────────────────────────────────────
+
+    /**
+     * Builds the approval table from server data.
+     *
+     * data.headers: array of column names from the sheet (e.g. ["File Name","PDF URL","Reviewer_1",...,"Comments"])
+     * data.rows:    2D array of cell values, one sub-array per row
+     *
+     * Column layout (0-based index):
+     *   0          = File Name   → plain text
+     *   1          = PDF URL     → hidden (stored on <tr>, not rendered)
+     *   2 … N-2    = Reviewers   → <select> dropdown
+     *   N-1        = Comments    → <textarea>
+     */
+    function buildTable(data) {
+      const headers = data.headers;
+      const rows    = data.rows;
+
+      // ── Build header row dynamically from sheet headers ──────────────────
+      // This means adding/removing a reviewer in Code.gs automatically
+      // updates the table without touching the HTML.
+      const headerRow = document.getElementById('tableHeaders');
+      headerRow.innerHTML = '';
+      headers.forEach((label, i) => {
+        if (i === 1) return; // skip PDF URL column
+        const th = document.createElement('th');
+        th.textContent = label;
+        headerRow.appendChild(th);
+      });
+
+      // ── Build data rows ───────────────────────────────────────────────────
+      const tbody = document.querySelector('#invoiceTable tbody');
+      tbody.innerHTML = '';
+
+      rows.forEach((row, rowIndex) => {
+        const tr = document.createElement('tr');
+        tr.dataset.pdf = row[1] || ''; // store PDF URL on the element for click handler
+
+        row.forEach((cell, colIndex) => {
+          if (colIndex === 1) return; // PDF URL — skip rendering
+
+          const td         = document.createElement('td');
+          const isLastCol  = colIndex === row.length - 1;
+          const isReviewer = colIndex >= 2 && !isLastCol;
+
+          if (isReviewer) {
+            // Reviewer column → dropdown
+            const select = document.createElement('select');
+            ['', 'Approved', 'N/A', 'Hold', 'Rejected'].forEach(val => {
+              const opt  = document.createElement('option');
+              opt.value  = val;
+              opt.textContent = val === '' ? ' ' : val;
+              if (cell === val) opt.selected = true;
+              select.appendChild(opt);
+            });
+
+            // Stop row click-to-preview from firing when interacting with the dropdown
+            select.addEventListener('click', e => e.stopPropagation());
+
+            // Write value back to sheet on change
+            select.addEventListener('change', () => {
+              google.script.run
+                .withFailureHandler(err => showError("Save failed: " + err.message))
+                .updateCell(currentSheet, rowIndex + 2, colIndex + 1, select.value);
+            });
+
+            td.appendChild(select);
+
+          } else if (isLastCol) {
+            // Last column → Comments textarea
+            const textarea = document.createElement('textarea');
+            textarea.value = cell || '';
+            textarea.rows  = 2;
+
+            // Stop row click-to-preview from firing when typing in comments
+            textarea.addEventListener('click', e => e.stopPropagation());
+
+            // Write value back to sheet when focus leaves the textarea
+            textarea.addEventListener('change', () => {
+              google.script.run
+                .withFailureHandler(err => showError("Save failed: " + err.message))
+                .updateCell(currentSheet, rowIndex + 2, colIndex + 1, textarea.value);
+            });
+
+            td.appendChild(textarea);
+
+          } else {
+            // File Name → plain text
+            td.textContent = cell ?? '';
+          }
+
+          tr.appendChild(td);
+        });
+
+        // Clicking anywhere on the row loads its PDF in the right pane
+        tr.addEventListener('click', () => {
+          const pdfUrl = tr.dataset.pdf || '';
+          if (!pdfUrl) return;
+          document.getElementById('pdfViewer').src = pdfUrl;
+          pdfUrlCache    = pdfUrl;
+          activeRowIndex = rowIndex;
+          highlightRow(rowIndex);
+        });
+
+        tbody.appendChild(tr);
+      });
+
+      // Re-apply the active row highlight and PDF after a background refresh
+      if (activeRowIndex !== null && rows[activeRowIndex]) {
+        highlightRow(activeRowIndex);
+        if (pdfUrlCache) document.getElementById('pdfViewer').src = pdfUrlCache;
+      }
+    }
+
+    function highlightRow(rowIndex) {
+      document.querySelectorAll('#invoiceTable tbody tr').forEach((row, idx) => {
+        row.classList.toggle('active-row', idx === rowIndex);
+      });
+    }
+
+    // ─── Init ─────────────────────────────────────────────────────────────────
+
+    loadTable();
+    startAutoRefresh();
+
+    // ─── Drag-to-resize panes ─────────────────────────────────────────────────
+
+    (function enableResizer() {
+      const resizer   = document.getElementById('resizer');
+      const leftPane  = document.getElementById('tablePane');
+      const rightPane = document.getElementById('pdfViewerContainer');
+      const container = document.getElementById('resizableContainer');
+      let isDragging  = false;
+
+      resizer.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        isDragging = true;
+        document.body.style.cursor = 'col-resize';
+      });
+
+      document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const rect     = container.getBoundingClientRect();
+        const offset   = e.clientX - rect.left;
+        const minLeft  = 300;
+        const maxLeft  = rect.width - 300;
+        const newWidth = Math.min(Math.max(offset, minLeft), maxLeft);
+        leftPane.style.flex  = 'none';
+        leftPane.style.width = `${newWidth}px`;
+        rightPane.style.flex = '1 1 auto';
+      });
+
+      document.addEventListener('mouseup', () => {
+        isDragging = false;
+        document.body.style.cursor = '';
+      });
+
+      // Double-click divider to reset to 50/50
+      resizer.addEventListener('dblclick', () => {
+        leftPane.style.flex  = '1 1 50%';
+        leftPane.style.width = '';
+        rightPane.style.flex = '1 1 50%';
+      });
+    })();
+  </script>
+</body>
+</html>
